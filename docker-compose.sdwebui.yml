@@ -1,0 +1,25 @@
+services:
+  sdwebui:
+    # 选择 CPU 友好镜像：不依赖 NVIDIA 驱动
+    image: ghcr.io/ai-dock/stable-diffusion-webui:latest
+    container_name: momentia-sdwebui
+    ports:
+      - "7860:7860"
+      - "17860:17860"
+    environment:
+      # 禁用 AI-Dock 的 Web 登录保护/反代跳转，否则 /sdapi/* 会 302 到登录页
+      - WEB_AUTH=false
+      - WEB_ENABLE_AUTH=false
+      # 禁用 quicktunnel（可选，避免暴露随机公网地址）
+      - CF_QUICK_TUNNELS_COUNT=0
+      # CPU 模式 + 全精度，避免 Half 在 CPU 上报错
+      - COMMANDLINE_ARGS=--listen --api --skip-torch-cuda-test --use-cpu all --precision full --no-half
+      - GRADIO_SERVER_PORT=17860
+    volumes:
+      - sd_models:/data/models
+      - sd_outputs:/data/outputs
+    restart: unless-stopped
+
+volumes:
+  sd_models:
+  sd_outputs:
