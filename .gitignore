@@ -4,7 +4,8 @@ node_modules
 # builds
 /dist
 /build
-
+/apps/api/dist
+/apps/web/dist
 # env
 .env
 .env.*

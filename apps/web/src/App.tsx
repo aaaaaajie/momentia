@@ -13,8 +13,28 @@ import {
   Progress,
   Skeleton,
   Alert,
+  Tooltip,
 } from 'antd';
 import type { UploadFile } from 'antd/es/upload/interface';
+
+const IconDownload = ({ size = 16 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M12 3v10m0 0 4-4m-4 4-4-4"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -38,6 +58,16 @@ function uid() {
 
 function fileToObjectUrl(f: File) {
   return URL.createObjectURL(f);
+}
+
+function downloadImageFromSrc(src: string, filename = `momentia-${Date.now()}.png`) {
+  const a = document.createElement('a');
+  a.href = src;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 export default function App() {
@@ -71,20 +101,19 @@ export default function App() {
           .map((x) => x.originFileObj as File | undefined)
           .filter(Boolean) as File[];
 
-        if (!prompt) {
-          message.warning('请输入内容');
-          return;
-        }
-        if (files.length === 0) {
-          message.warning('请上传 1~3 张照片');
+        const hasPrompt = Boolean(prompt);
+        const hasFiles = files.length > 0;
+
+        if (!hasPrompt && !hasFiles) {
+          message.warning('请输入内容或上传照片');
           return;
         }
 
         const userMsg: ChatMessage = {
           id: uid(),
           role: 'user',
-          text: prompt,
-          images: files.map(fileToObjectUrl),
+          text: hasPrompt ? prompt : undefined,
+          images: hasFiles ? files.map(fileToObjectUrl) : undefined,
           createdAt: Date.now(),
         };
 
@@ -106,7 +135,7 @@ export default function App() {
         try {
           const fd = new FormData();
           for (const f of files) fd.append('files', f);
-          fd.append('prompt', prompt);
+          if (hasPrompt) fd.append('prompt', prompt);
           fd.append('templateId', templateId);
 
           const res = await fetch(`${apiBase}/api/ai/compose/stream`, {
@@ -543,18 +572,77 @@ export default function App() {
                             gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
                           }}
                         >
-                          {m.images.map((src) => (
-                            <img
+                          {m.images.map((src, idx) => (
+                            <div
                               key={src}
-                              src={src}
-                              alt="img"
+                              className="mm-img-wrap"
                               style={{
-                                width: '100%',
+                                position: 'relative',
                                 borderRadius: 12,
+                                overflow: 'hidden',
                                 border: '1px solid #eef0f3',
-                                objectFit: 'cover',
                               }}
-                            />
+                              onMouseEnter={(e) => {
+                                const el = (e.currentTarget.querySelector('.mm-img-actions') as HTMLElement | null);
+                                if (el) el.style.opacity = '1';
+                              }}
+                              onMouseLeave={(e) => {
+                                const el = (e.currentTarget.querySelector('.mm-img-actions') as HTMLElement | null);
+                                if (el) el.style.opacity = '0';
+                              }}
+                            >
+                              <img
+                                src={src}
+                                alt="img"
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  display: 'block',
+                                  objectFit: 'cover',
+                                }}
+                              />
+
+                              <div
+                                className="mm-img-actions"
+                                style={{
+                                  position: 'absolute',
+                                  inset: 0,
+                                  display: 'flex',
+                                  alignItems: 'flex-start',
+                                  justifyContent: 'flex-end',
+                                  padding: 10,
+                                  background:
+                                    'linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.12) 45%, rgba(0,0,0,0) 100%)',
+                                  opacity: 0,
+                                  transition: 'opacity 160ms ease',
+                                  pointerEvents: 'none',
+                                }}
+                              >
+                                <div style={{ display: 'flex', gap: 8, pointerEvents: 'auto' }}>
+                                  <Tooltip title="下载">
+                                    <Button
+                                      size="large"
+                                      type="primary"
+                                      icon={<IconDownload size={18} />}
+                                      style={{
+                                        height: 36,
+                                        paddingInline: 12,
+                                        borderRadius: 10,
+                                        boxShadow: '0 10px 22px rgba(0,0,0,0.18)',
+                                      }}
+                                      onClick={() =>
+                                        downloadImageFromSrc(src, `momentia-${m.createdAt}-${idx + 1}.png`)
+                                      }
+                                    >
+                                    </Button>
+                                  </Tooltip>
+                                </div>
+                              </div>
+
+                              <style>{`
+                                .mm-img-wrap:hover .mm-img-actions { opacity: 1; }
+                              `}</style>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -629,7 +717,12 @@ export default function App() {
               </Typography.Text>
             </div>
 
-            <Button type="primary" onClick={() => void send()} loading={loading}>
+            <Button
+              type="primary"
+              onClick={() => void send()}
+              loading={loading}
+              disabled={loading || (!input.trim() && fileList.length === 0)}
+            >
               发送
             </Button>
           </Flex>
