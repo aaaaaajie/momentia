@@ -10,6 +10,9 @@ import {
   Segmented,
   Space,
   Collapse,
+  Progress,
+  Skeleton,
+  Alert,
 } from 'antd';
 import type { UploadFile } from 'antd/es/upload/interface';
 
@@ -24,6 +27,9 @@ type ChatMessage = {
   images?: string[]; // object url
   result?: any; // api result
   createdAt: number;
+  pending?: boolean;
+  progress?: { stage: string; percent: number; message?: string };
+  error?: { code?: string; message?: string; details?: any; statusCode?: number };
 };
 
 function uid() {
@@ -82,7 +88,17 @@ export default function App() {
           createdAt: Date.now(),
         };
 
-        setMessages((prev) => [...prev, userMsg]);
+        const pendingId = uid();
+        const pendingMsg: ChatMessage = {
+          id: pendingId,
+          role: 'assistant',
+          text: '正在生成中…',
+          createdAt: Date.now(),
+          pending: true,
+          progress: { stage: 'init', percent: 0, message: '准备中' },
+        };
+
+        setMessages((prev) => [...prev, userMsg, pendingMsg]);
         setInput('');
         setLoading(true);
         scrollToBottom();
@@ -93,39 +109,143 @@ export default function App() {
           fd.append('prompt', prompt);
           fd.append('templateId', templateId);
 
-          // 走 vite proxy：/api -> http://localhost:3000
-          const res = await fetch(`${apiBase}/api/ai/compose`, {
+          const res = await fetch(`${apiBase}/api/ai/compose/stream`, {
             method: 'POST',
             body: fd,
           });
 
-          const data = await res.json().catch(() => null);
-          if (!res.ok) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: uid(),
-                role: 'assistant',
-                text: `生成失败：${data?.message || res.statusText}`,
-                result: data,
-                createdAt: Date.now(),
-              },
-            ]);
+          if (!res.ok || !res.body) {
+            const data = await res.json().catch(() => null);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingId
+                  ? {
+                      ...m,
+                      pending: false,
+                      error: {
+                        code: data?.code,
+                        message: data?.message || data?.error || res.statusText,
+                        details: data?.details,
+                        statusCode: data?.statusCode || res.status,
+                      },
+                      text: `生成失败：${data?.message || res.statusText}`,
+                      result: data,
+                    }
+                  : m,
+              ),
+            );
             return;
           }
 
-          const imgB64 = data?.imageBase64;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: uid(),
-              role: 'assistant',
-              text: '已生成。你可以继续补充：比如“再复古一点 / 多加贴纸 / 标题改成……”。',
-              result: data,
-              images: imgB64 ? [`data:image/png;base64,${imgB64}`] : undefined,
-              createdAt: Date.now(),
-            },
-          ]);
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder('utf-8');
+          let buf = '';
+
+          const applyProgress = (p: any) => {
+            const percent = typeof p?.percent === 'number' ? p.percent : 0;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingId
+                  ? {
+                      ...m,
+                      pending: true,
+                      progress: {
+                        stage: String(p?.stage || 'progress'),
+                        percent,
+                        message: p?.message,
+                      },
+                      text: p?.message ? `正在生成：${p.message}` : m.text,
+                    }
+                  : m,
+              ),
+            );
+          };
+
+          const applyDone = (data: any) => {
+            const imgB64 = data?.imageBase64;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingId
+                  ? {
+                      ...m,
+                      pending: false,
+                      progress: { stage: 'done', percent: 1, message: '完成' },
+                      text: '已生成。你可以继续补充：比如“再复古一点 / 多加贴纸 / 标题改成……” 。',
+                      result: data,
+                      images: imgB64 ? [`data:image/png;base64,${imgB64}`] : undefined,
+                    }
+                  : m,
+              ),
+            );
+            setFileList([]);
+          };
+
+          const applyError = (err: any) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingId
+                  ? {
+                      ...m,
+                      pending: false,
+                      error: err,
+                      text: `生成失败：${err?.message || '未知错误'}`,
+                      result: err,
+                    }
+                  : m,
+              ),
+            );
+            setFileList([]);
+          };
+
+          const parseSse = (chunk: string) => {
+            buf += chunk;
+            // SSE 事件以空行分隔
+            while (true) {
+              const idx = buf.indexOf('\n\n');
+              if (idx === -1) break;
+              const raw = buf.slice(0, idx);
+              buf = buf.slice(idx + 2);
+
+              let event = 'message';
+              let dataLine = '';
+              for (const line of raw.split('\n')) {
+                if (line.startsWith('event:')) event = line.slice(6).trim();
+                if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+              }
+
+              if (!dataLine) continue;
+              let payload: any;
+              try {
+                payload = JSON.parse(dataLine);
+              } catch {
+                payload = dataLine;
+              }
+
+              if (event === 'progress') applyProgress(payload);
+              if (event === 'done') applyDone(payload);
+              if (event === 'error') applyError(payload);
+            }
+          };
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            parseSse(decoder.decode(value, { stream: true }));
+            scrollToBottom();
+          }
+        } catch (e: any) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingId
+                ? {
+                    ...m,
+                    pending: false,
+                    error: { code: 'NETWORK', message: e?.message || String(e) },
+                    text: `生成失败：${e?.message || String(e)}`,
+                  }
+                : m,
+            ),
+          );
         } finally {
           setLoading(false);
           scrollToBottom();
@@ -134,8 +254,36 @@ export default function App() {
     [fileList, input, templateId],
   );
 
+  // 全局注入一次动画 keyframes（避免放在 map 内导致部分浏览器不触发/被重置）
+  const globalAnimCss = `
+    @keyframes mm_shimmer {
+      0% { transform: translateX(-45%) rotate(18deg); opacity: 0; }
+      20% { opacity: 0.35; }
+      50% { opacity: 0.22; }
+      100% { transform: translateX(110%) rotate(18deg); opacity: 0; }
+    }
+    @keyframes mm_breathe {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.006); }
+    }
+    @keyframes mm_twinkle {
+      0%, 100% { opacity: 0.20; transform: scale(1); filter: blur(0px); }
+      40% { opacity: 0.95; transform: scale(1.06); filter: blur(0.6px); }
+      70% { opacity: 0.35; transform: scale(1.01); filter: blur(0.2px); }
+    }
+    @keyframes mm_twinkle2 {
+      0%, 100% { opacity: 0.10; transform: scale(1); }
+      50% { opacity: 0.65; transform: scale(1.08); }
+    }
+    @keyframes mm_drift {
+      0% { transform: translate3d(0, 0, 0); }
+      100% { transform: translate3d(0, -10px, 0); }
+    }
+  `;
+
   return (
     <Flex vertical style={{ height: '100vh', background: '#f6f7fb' }}>
+      <style>{globalAnimCss}</style>
       <div
         style={{
           borderBottom: '1px solid #eef0f3',
@@ -183,10 +331,7 @@ export default function App() {
         <div style={{ maxWidth: 980, margin: '0 auto' }}>
           <Flex vertical gap={12}>
             {messages.map((m) => (
-              <Flex
-                key={m.id}
-                justify={m.role === 'user' ? 'flex-end' : 'flex-start'}
-              >
+              <Flex key={m.id} justify={m.role === 'user' ? 'flex-end' : 'flex-start'}>
                 <div
                   style={{
                     width: 'min(760px, 100%)',
@@ -200,13 +345,189 @@ export default function App() {
                     style={{
                       maxWidth: 760,
                       borderRadius: 16,
-                      background: m.role === 'user' ? '#ffffff' : '#ffffff',
+                      background: '#ffffff',
                       border: m.role === 'user' ? '1px solid #e7e9ee' : '1px solid #eef0f3',
-                      boxShadow: m.role === 'user'
-                        ? '0 8px 28px rgba(16,24,40,0.06)'
-                        : '0 8px 28px rgba(16,24,40,0.05)',
+                      boxShadow:
+                        m.role === 'user'
+                          ? '0 8px 28px rgba(16,24,40,0.06)'
+                          : '0 8px 28px rgba(16,24,40,0.05)',
                     }}
                   >
+                    {m.pending ? (
+                      <div style={{ marginBottom: 10 }}>
+                        <div
+                          style={{
+                            position: 'relative',
+                            overflow: 'hidden',
+                            borderRadius: 14,
+                            border: '1px solid rgba(226,232,240,1)',
+                            background: 'radial-gradient(1200px 420px at 18% 22%, rgba(59,130,246,0.22) 0%, rgba(2,6,23,0) 55%), radial-gradient(900px 320px at 82% 78%, rgba(34,211,153,0.18) 0%, rgba(2,6,23,0) 60%), linear-gradient(135deg, #0b1222 0%, #070b16 45%, #0b1020 100%)',
+                            width: 640,
+                            maxWidth: '100%',
+                            marginRight: 'auto',
+                            transform: 'translateZ(0)',
+                          }}
+                        >
+                          {/* 星星背景层（轻量 SVG data-uri） */}
+                          <div
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              backgroundImage:
+                                "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='160' viewBox='0 0 240 160'%3E%3Cg%3E%3Ccircle cx='18' cy='22' r='1.5' fill='%23FFFFFF' opacity='0.95'/%3E%3Ccircle cx='52' cy='44' r='1.1' fill='%23C7D2FE' opacity='0.85'/%3E%3Ccircle cx='96' cy='30' r='1.3' fill='%23E0F2FE' opacity='0.9'/%3E%3Ccircle cx='138' cy='58' r='1.0' fill='%23FFFFFF' opacity='0.72'/%3E%3Ccircle cx='176' cy='28' r='1.2' fill='%23ECFDF5' opacity='0.82'/%3E%3Ccircle cx='210' cy='62' r='1.4' fill='%23E0E7FF' opacity='0.9'/%3E%3Ccircle cx='28' cy='112' r='1.2' fill='%23FFFFFF' opacity='0.85'/%3E%3Ccircle cx='70' cy='132' r='1.0' fill='%23C7D2FE' opacity='0.78'/%3E%3Ccircle cx='118' cy='118' r='1.45' fill='%23E0F2FE' opacity='0.95'/%3E%3Ccircle cx='160' cy='136' r='1.1' fill='%23FFFFFF' opacity='0.82'/%3E%3Ccircle cx='204' cy='118' r='1.3' fill='%23ECFDF5' opacity='0.9'/%3E%3C/g%3E%3C/svg%3E\")",
+                              backgroundRepeat: 'repeat',
+                              backgroundSize: '260px 170px',
+                              opacity: 0.65,
+                              animation: 'mm_drift 4.6s ease-in-out infinite alternate',
+                              pointerEvents: 'none',
+                            }}
+                          />
+
+                          {/* 星光闪烁层 1：更亮 */}
+                          <div
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              background: [
+                                'radial-gradient(circle at 18% 22%, rgba(96,165,250,1) 0 2.2px, rgba(96,165,250,0) 18px)',
+                                'radial-gradient(circle at 72% 36%, rgba(52,211,153,0.95) 0 1.9px, rgba(52,211,153,0) 20px)',
+                                'radial-gradient(circle at 85% 70%, rgba(129,140,248,1) 0 2.1px, rgba(129,140,248,0) 20px)',
+                                'radial-gradient(circle at 35% 78%, rgba(96,165,250,0.9) 0 1.8px, rgba(96,165,250,0) 18px)',
+                              ].join(', '),
+                              opacity: 0.9,
+                              animation: 'mm_twinkle 1.25s ease-in-out infinite',
+                              pointerEvents: 'none',
+                              willChange: 'opacity, transform, filter',
+                              transform: 'translate3d(0,0,0)',
+                            }}
+                          />
+
+                          {/* 星光闪烁层 2：更多碎星 */}
+                          <div
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              background: [
+                                'radial-gradient(circle at 12% 60%, rgba(255,255,255,0.9) 0 1.4px, rgba(255,255,255,0) 14px)',
+                                'radial-gradient(circle at 58% 20%, rgba(255,255,255,0.8) 0 1.2px, rgba(255,255,255,0) 14px)',
+                                'radial-gradient(circle at 78% 52%, rgba(255,255,255,0.88) 0 1.5px, rgba(255,255,255,0) 16px)',
+                                'radial-gradient(circle at 46% 46%, rgba(255,255,255,0.75) 0 1.1px, rgba(255,255,255,0) 14px)',
+                                'radial-gradient(circle at 90% 18%, rgba(255,255,255,0.8) 0 1.2px, rgba(255,255,255,0) 14px)',
+                                'radial-gradient(circle at 22% 84%, rgba(255,255,255,0.7) 0 1.0px, rgba(255,255,255,0) 12px)',
+                              ].join(', '),
+                              opacity: 0.55,
+                              animation: 'mm_twinkle2 1.9s ease-in-out infinite',
+                              pointerEvents: 'none',
+                              willChange: 'opacity, transform',
+                              transform: 'translate3d(0,0,0)',
+                            }}
+                          />
+
+                          {/* 内容区域：深色卡面 */}
+                          <div
+                            style={{
+                              animation: 'mm_breathe 2.8s ease-in-out infinite',
+                              padding: 12,
+                            }}
+                          >
+                            <div
+                              style={{
+                                height: 220,
+                                borderRadius: 12,
+                                background:
+                                  'linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))',
+                                boxShadow:
+                                  'inset 0 0 0 1px rgba(255,255,255,0.09), 0 14px 40px rgba(0,0,0,0.28)',
+                                backdropFilter: 'blur(6px)',
+                              }}
+                            />
+                          </div>
+
+                          {/* 渐变扫光（shimmer）*/}
+                          <div
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              top: -60,
+                              left: 0,
+                              width: '55%',
+                              height: '160%',
+                              background:
+                                'linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.23) 40%, rgba(255,255,255,0) 85%)',
+                              filter: 'blur(2px)',
+                              animation: 'mm_shimmer 2.2s ease-in-out infinite',
+                              pointerEvents: 'none',
+                              mixBlendMode: 'screen',
+                            }}
+                          />
+
+                          {/* 顶部文案 */}
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: '50%',
+                              left: '50%',
+                              transform: 'translate(-50%, -50%)',
+                              color: 'rgba(255,255,255,0.94)',
+                              fontWeight: 750,
+                              fontSize: 22,
+                              letterSpacing: 0.2,
+                              textShadow: '0 6px 20px rgba(0,0,0,0.6)',
+                              padding: '10px 14px',
+                              borderRadius: 999,
+                              background: 'rgba(2,6,23,0.35)',
+                              backdropFilter: 'blur(10px)',
+                              border: '1px solid rgba(255,255,255,0.10)',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {`${Math.round((m.progress?.percent ?? 0) * 100)}%${m.progress?.message ? ` ${m.progress.message}` : ' 造梦中'}`}
+                          </div>
+
+                          {/* 底部全宽进度条 */}
+                          <div
+                            style={{
+                              position: 'absolute',
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              padding: '10px 12px 12px',
+                            }}
+                          >
+                            <Progress
+                              percent={Math.round((m.progress?.percent ?? 0) * 100)}
+                              status="active"
+                              showInfo={false}
+                              strokeColor={{ from: '#60A5FA', to: '#34D399' }}
+                              trailColor="rgba(255,255,255,0.14)"
+                              size="small"
+                            />
+                          </div>
+                        </div>
+
+                        {/* 阶段说明（可选，小字） */}
+                        <div style={{ marginTop: 8 }}>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            {(m.progress?.stage || 'progress') + (m.progress?.message ? `：${m.progress.message}` : '')}
+                          </Typography.Text>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {m.error ? (
+                      <div style={{ marginBottom: 10 }}>
+                        <Alert
+                          type="error"
+                          showIcon
+                          message={m.error.message || '生成失败'}
+                          description={m.error.code ? `错误码：${m.error.code}` : undefined}
+                        />
+                      </div>
+                    ) : null}
+
                     {m.text ? (
                       <Typography.Paragraph style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
                         {m.text}

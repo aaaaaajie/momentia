@@ -6,6 +6,7 @@ const common_1 = require("@nestjs/common");
 const path_1 = require("path");
 const fs_1 = require("fs");
 const express = require('express');
+const http_exception_filter_1 = require("./common/http-exception.filter");
 async function bootstrap() {
     const app = await core_1.NestFactory.create(app_module_1.AppModule);
     app.use((req, _res, next) => {
@@ -17,6 +18,7 @@ async function bootstrap() {
         forbidNonWhitelisted: true,
         transform: true,
     }));
+    app.useGlobalFilters(new http_exception_filter_1.GlobalHttpExceptionFilter());
     const uploadsDir = (0, path_1.join)(process.cwd(), 'uploads');
     if (!(0, fs_1.existsSync)(uploadsDir))
         (0, fs_1.mkdirSync)(uploadsDir, { recursive: true });

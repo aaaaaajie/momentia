@@ -7,6 +7,8 @@ const sharp = require('sharp');
 
 import { CollageGenerateResult, CollagePlan } from './openai-collage.types';
 
+import { AiError } from '../../common/ai-error';
+
 // NOTE: Node 内置 fetch(undici) 需要 undici dispatcher；https-proxy-agent 不兼容 dispatcher
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ProxyAgent } = require('undici');
@@ -61,37 +63,100 @@ export class OpenAiCollageService {
     return new ProxyAgent(proxy);
   }
 
+  private async withTimeout<T>(promise: Promise<T>, ms: number, label: string, code: any) {
+    const timeoutMs = Math.max(1000, Math.floor(ms));
+    let t: any;
+    const timeout = new Promise<never>((_, reject) => {
+      t = setTimeout(() => {
+        reject(new AiError({ code, status: 504, message: `${label} timeout after ${timeoutMs}ms` }));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  private getChatTimeoutMs() {
+    return Number(this.config.get<string>('OPENAI_CHAT_TIMEOUT_MS') || 60000);
+  }
+
+  private getImagesTimeoutMs() {
+    return Number(this.config.get<string>('OPENAI_IMAGES_TIMEOUT_MS') || 120000);
+  }
+
   private async openaiChatJson<T>(params: { model: string; messages: any[] }): Promise<T> {
     const apiKey = this.requireEnv('OPENAI_API_KEY');
     const dispatcher = this.getProxyDispatcher();
 
     let res: Response;
     try {
-      res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: params.model,
-          temperature: 0.4,
-          response_format: { type: 'json_object' },
-          messages: params.messages,
-        }),
-        ...(dispatcher ? { dispatcher } : {}),
-      } as any);
+      res = await this.withTimeout(
+        fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: params.model,
+            temperature: 0.4,
+            response_format: { type: 'json_object' },
+            messages: params.messages,
+          }),
+          ...(dispatcher ? { dispatcher } : {}),
+        } as any),
+        this.getChatTimeoutMs(),
+        'OpenAI chat',
+        'OPENAI_CHAT_TIMEOUT',
+      );
     } catch (e: any) {
+      if (e?.name === 'AiError') throw e;
       const proxyHint = dispatcher ? ' (using proxy)' : ' (no proxy set)';
-      throw new Error(`OpenAI chat network error${proxyHint}: ${e?.message || String(e)}`);
+      throw new AiError({
+        code: 'OPENAI_CHAT_NETWORK',
+        status: 502,
+        message: `OpenAI chat network error${proxyHint}: ${e?.message || String(e)}`,
+      });
     }
 
     const text = await res.text();
-    if (!res.ok) throw new Error(`OpenAI chat error: ${res.status} ${res.statusText} - ${text}`);
-    const json = JSON.parse(text);
+    if (!res.ok)
+      throw new AiError({
+        code: 'OPENAI_CHAT_HTTP',
+        status: 502,
+        message: `OpenAI chat error: ${res.status} ${res.statusText}`,
+        details: { status: res.status, statusText: res.statusText, body: text },
+      });
+
+    let json: any;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new AiError({
+        code: 'OPENAI_CHAT_HTTP',
+        status: 502,
+        message: 'OpenAI chat: invalid JSON response',
+        details: { bodyHead: text.slice(0, 400) },
+      });
+    }
+
     const content = json?.choices?.[0]?.message?.content;
-    if (typeof content !== 'string') throw new Error('OpenAI chat: empty response');
-    return JSON.parse(content) as T;
+    if (typeof content !== 'string')
+      throw new AiError({ code: 'OPENAI_CHAT_HTTP', status: 502, message: 'OpenAI chat: empty response' });
+
+    try {
+      return JSON.parse(content) as T;
+    } catch {
+      throw new AiError({
+        code: 'OPENAI_CHAT_HTTP',
+        status: 502,
+        message: 'OpenAI chat: model did not return a valid JSON object',
+        details: { contentHead: String(content).slice(0, 800) },
+      });
+    }
   }
 
   private normalizeOpenAiImageSize(params: { width: number; height: number }): string {
@@ -188,42 +253,60 @@ export class OpenAiCollageService {
     let res: Response;
     try {
       // OpenAI Images 生成接口: /v1/images/generations
-      res = await this.fetchWithRetry({
-        url: 'https://api.openai.com/v1/images/generations',
-        dispatcher,
-        retries: 3,
-        baseDelayMs: 600,
-        init: {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${apiKey}`,
-            'content-type': 'application/json',
+      res = await this.withTimeout(
+        this.fetchWithRetry({
+          url: 'https://api.openai.com/v1/images/generations',
+          dispatcher,
+          retries: 3,
+          baseDelayMs: 600,
+          init: {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${apiKey}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              model,
+              prompt: params.prompt,
+              size: normalizedSize,
+              n: 1,
+            }),
           },
-          body: JSON.stringify({
-            model,
-            prompt: params.prompt,
-            size: normalizedSize,
-            n: 1,
-          }),
-        },
-      });
+        }),
+        this.getImagesTimeoutMs(),
+        'OpenAI images',
+        'OPENAI_IMAGES_TIMEOUT',
+      );
     } catch (e: any) {
+      if (e?.name === 'AiError') throw e;
       const proxyHint = dispatcher ? ' (using proxy)' : ' (no proxy set)';
-      throw new Error(`OpenAI images network error${proxyHint}: ${e?.message || String(e)}`);
+      throw new AiError({
+        code: 'OPENAI_IMAGES_NETWORK',
+        status: 502,
+        message: `OpenAI images network error${proxyHint}: ${e?.message || String(e)}`,
+      });
     }
 
     const text = await res.text();
     if (!res.ok)
-      throw new Error(
-        `OpenAI images error: ${res.status} ${res.statusText} (model=${model}, size=${normalizedSize}) - ${text}`,
-      );
+      throw new AiError({
+        code: 'OPENAI_IMAGES_HTTP',
+        status: 502,
+        message: `OpenAI images error: ${res.status} ${res.statusText} (model=${model}, size=${normalizedSize})`,
+        details: { status: res.status, statusText: res.statusText, body: text },
+      });
 
     if (!text.trim().startsWith('{')) {
-      throw new Error(
-        `OpenAI images: expected JSON response but got non-JSON body (status ${res.status}). Body head: ${text
-          .slice(0, 200)
-          .replace(/\s+/g, ' ')}`,
-      );
+      throw new AiError({
+        code: 'OPENAI_IMAGES_HTTP',
+        status: 502,
+        message: `OpenAI images: expected JSON response but got non-JSON body (status ${res.status})`,
+        details: {
+          bodyHead: text
+            .slice(0, 200)
+            .replace(/\s+/g, ' '),
+        },
+      });
     }
 
     const json = JSON.parse(text);
@@ -235,26 +318,41 @@ export class OpenAiCollageService {
     if (typeof url === 'string' && url.startsWith('http')) {
       let imgRes: Response;
       try {
-        imgRes = await fetch(url, {
-          ...(dispatcher ? { dispatcher } : {}),
-        } as any);
+        imgRes = await this.withTimeout(
+          fetch(url, {
+            ...(dispatcher ? { dispatcher } : {}),
+          } as any),
+          this.getImagesTimeoutMs(),
+          'OpenAI images download',
+          'OPENAI_IMAGES_TIMEOUT',
+        );
       } catch (e: any) {
+        if (e?.name === 'AiError') throw e;
         const proxyHint = dispatcher ? ' (using proxy)' : ' (no proxy set)';
-        throw new Error(`OpenAI images download network error${proxyHint}: ${e?.message || String(e)}`);
+        throw new AiError({
+          code: 'OPENAI_IMAGES_NETWORK',
+          status: 502,
+          message: `OpenAI images download network error${proxyHint}: ${e?.message || String(e)}`,
+        });
       }
 
       const arr = await imgRes.arrayBuffer();
       if (!imgRes.ok) {
-        throw new Error(
-          `OpenAI images download error: ${imgRes.status} ${imgRes.statusText} - ${Buffer.from(arr)
-            .toString('utf8')
-            .slice(0, 200)}`,
-        );
+        throw new AiError({
+          code: 'OPENAI_IMAGES_HTTP',
+          status: 502,
+          message: `OpenAI images download error: ${imgRes.status} ${imgRes.statusText}`,
+          details: { bodyHead: Buffer.from(arr).toString('utf8').slice(0, 200) },
+        });
       }
       return Buffer.from(arr).toString('base64');
     }
 
-    throw new Error('OpenAI images: empty b64_json (and no url fallback)');
+    throw new AiError({
+      code: 'OPENAI_IMAGES_HTTP',
+      status: 502,
+      message: 'OpenAI images: empty b64_json (and no url fallback)',
+    });
   }
 
   private coerceStyle(style?: string, templateId?: string) {
@@ -278,7 +376,6 @@ export class OpenAiCollageService {
   private defaultLayout(params: { width: number; height: number; photoCount: number }) {
     const { width, height, photoCount } = params;
 
-    // 模仿示例：顶部日期 + 大标题；中间“左大图 + 右两张小图”；下方正文
     const photos = [] as any[];
     if (photoCount >= 1) {
       photos.push({
@@ -381,7 +478,7 @@ export class OpenAiCollageService {
 
     const els = params.texts
       .filter((t) => t?.text?.trim())
-      .map((t, i) => {
+      .map((t) => {
         const x = Math.round(t.x);
         const y = Math.round(t.y);
         const w = Math.round(t.w);
@@ -391,12 +488,10 @@ export class OpenAiCollageService {
         const align = t.align || 'left';
         const anchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start';
         const xAnchor = align === 'center' ? x + w / 2 : align === 'right' ? x + w : x;
-        const yBase = y + fontSize; // 简化 baseline
+        const yBase = y + fontSize;
         const family = t.fontFamily === 'serif' ? 'Georgia, serif' : 'Arial, sans-serif';
         const weight = t.weight ?? 600;
-        const transform = t.rotate
-          ? ` transform="rotate(${t.rotate} ${x + w / 2} ${y + h / 2})"`
-          : '';
+        const transform = t.rotate ? ` transform="rotate(${t.rotate} ${x + w / 2} ${y + h / 2})"` : '';
 
         return `<text${transform} x="${xAnchor}" y="${yBase}" text-anchor="${anchor}" fill="${color}" font-family="${family}" font-size="${fontSize}" font-weight="${weight}">${escape(t.text)}</text>`;
       })
@@ -421,7 +516,6 @@ export class OpenAiCollageService {
     const pad = Math.round(Math.min(params.width, params.height) * 0.08);
     const bottomPad = Math.round(pad * 1.8);
 
-    // 白色相纸底
     const frameW = params.width + pad * 2;
     const frameH = params.height + pad + bottomPad;
 
@@ -448,7 +542,6 @@ export class OpenAiCollageService {
 
     if (!params.shadow) return frame;
 
-    // 简单阴影：复制一层黑色模糊并下移
     const shadow = await sharp(frame)
       .tint('#000000')
       .modulate({ brightness: 0.2 })
@@ -482,7 +575,6 @@ export class OpenAiCollageService {
     inputW: number;
     inputH: number;
   }): { left: number; top: number; w: number; h: number } | null {
-    // 将输入图层裁剪到画布内，避免 sharp 抛出 "Image to composite must have same dimensions or smaller"
     const left = Math.floor(params.left);
     const top = Math.floor(params.top);
     const inW = Math.floor(params.inputW);
@@ -502,7 +594,6 @@ export class OpenAiCollageService {
     const h = y1 - y0;
     if (w <= 0 || h <= 0) return null;
 
-    // 返回裁剪后的尺寸以及在画布上的位置
     return { left: x0, top: y0, w, h };
   }
 
@@ -527,7 +618,6 @@ export class OpenAiCollageService {
     });
     if (!rect) return null;
 
-    // 需要从输入图中裁剪掉超出画布的部分
     const extractLeft = rect.left - Math.floor(params.left);
     const extractTop = rect.top - Math.floor(params.top);
 
@@ -549,330 +639,365 @@ export class OpenAiCollageService {
     files?: any[];
     width?: number;
     height?: number;
+    onProgress?: (e: { stage: string; percent: number; message?: string }) => void;
   }): Promise<CollageGenerateResult> {
-    const width = params.width ?? 1024;
-    const height = params.height ?? 1400;
-    const size = `${width}x${height}`;
+    const report = (stage: string, percent: number, message?: string) => {
+      try {
+        params.onProgress?.({ stage, percent, message });
+      } catch {
+        // ignore
+      }
+    };
 
-    const style = this.coerceStyle(params.style, params.templateId);
+    try {
+      report('init', 0.02, '开始处理输入');
 
-    // 上传图
-    const photoFiles = (params.files || []).slice(0, 3);
-    const photoCount = photoFiles.length;
-    const photoPngs: Buffer[] = [];
-    for (const f of photoFiles) {
-      photoPngs.push(await this.fileToPngBuffer(f));
-    }
+      const width = params.width ?? 1024;
+      const height = params.height ?? 1400;
+      const size = `${width}x${height}`;
 
-    // 给 GPT-4o 做“元素提取/主题对齐/版式规划”参考：用 base64
-    const imagesB64: string[] = [];
-    for (const f of photoFiles) imagesB64.push(await this.fileToPngBase64(f));
+      const style = this.coerceStyle(params.style, params.templateId);
 
-    const fallbackLayout = this.defaultLayout({ width, height, photoCount });
+      // 上传图
+      report('prepare_images', 0.08, '读取并转换图片');
+      const photoFiles = (params.files || []).slice(0, 3);
+      const photoCount = photoFiles.length;
+      const photoPngs: Buffer[] = [];
+      for (const f of photoFiles) {
+        photoPngs.push(await this.fileToPngBuffer(f));
+      }
 
-    const plan = await this.openaiChatJson<CollagePlan>({
-      model: this.config.get<string>('OPENAI_CHAT_MODEL') || 'gpt-4o',
-      messages: [
-        {
-          role: 'system',
-          content:
-            '你是一个“手账拼贴版式”生成助手。目标是做出类似手账/杂志排版的拼贴：纸张背景、相纸/拍立得照片框、贴纸装饰、标题与正文。你必须输出严格 JSON，字段必须存在且可执行。\n' +
-            '硬性约束：layout 中坐标与尺寸都用 0~1 的相对数值；photos 的 sourceIndex 必须在 [0, imageCount-1]；texts 的 kind 只能是 date/title/body；elements 2~8 个；禁止输出任何 JSON 之外的文字。\n' +
-            '风格偏好（可参考）：留白充足、干净清爽、轻微阴影、胶带/贴纸点缀；禁止生成可读文字到背景/贴纸（文本由 layout.texts 渲染）。',
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                prompt: params.prompt,
-                style,
-                templateId: params.templateId,
-                imageCount: photoCount,
-                canvas: { width, height },
-                example_layout_hint: {
-                  top: 'date + big title',
-                  middle: '1 big photo + 1-2 small photos',
-                  decorations: '2-4 stickers around photos',
-                },
-                output_schema: {
-                  style: 'string',
-                  palette: ['string'],
-                  backgroundPrompt: 'string',
-                  elements: [{ id: 'string', kind: 'sticker|frame|decoration', prompt: 'string' }],
-                  layout: {
-                    canvas: { width: 'number', height: 'number' },
-                    backgroundStyle: 'paper|stationery|minimal|poster',
-                    photos: [
-                      {
-                        id: 'string',
-                        sourceIndex: 'number',
-                        x: '0~1',
-                        y: '0~1',
-                        w: '0~1',
-                        h: '0~1',
-                        rotate: 'number',
-                        style: 'polaroid|tape|clean',
-                        cornerRadius: 'number',
-                        shadow: 'boolean',
-                      },
-                    ],
-                    texts: [
-                      {
-                        id: 'string',
-                        kind: 'date|title|body',
-                        text: 'string',
-                        x: '0~1',
-                        y: '0~1',
-                        w: '0~1',
-                        h: '0~1',
-                        align: 'left|center|right',
-                        fontSize: 'number',
-                        color: 'string',
-                        fontFamily: 'sans|serif',
-                        rotate: 'number',
-                      },
-                    ],
-                    stickers: [{ elementId: 'string', x: '0~1', y: '0~1', w: '0~1', h: '0~1', rotate: 'number' }],
+      // 给 GPT 做版式规划参考：用 base64
+      const imagesB64: string[] = [];
+      for (const f of photoFiles) imagesB64.push(await this.fileToPngBase64(f));
+
+      const fallbackLayout = this.defaultLayout({ width, height, photoCount });
+
+      // report('plan', 0.18);
+      const plan = await this.openaiChatJson<CollagePlan>({
+        model: this.config.get<string>('OPENAI_CHAT_MODEL') || 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content:
+              '你是一个“手账拼贴版式”生成助手。目标是做出类似手账/杂志排版的拼贴：纸张背景、相纸/拍立得照片框、贴纸装饰、标题与正文。你必须输出严格 JSON，字段必须存在且可执行。\n' +
+              '硬性约束：layout 中坐标与尺寸都用 0~1 的相对数值；photos 的 sourceIndex 必须在 [0, imageCount-1]；texts 的 kind 只能是 date/title/body；elements 2~8 个；禁止输出任何 JSON 之外的文字。\n' +
+              '风格偏好（可参考）：留白充足、干净清爽、轻微阴影、胶带/贴纸点缀；禁止生成可读文字到背景/贴纸（文本由 layout.texts 渲染）。',
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  prompt: params.prompt,
+                  style,
+                  templateId: params.templateId,
+                  imageCount: photoCount,
+                  canvas: { width, height },
+                  example_layout_hint: {
+                    top: 'date + big title',
+                    middle: '1 big photo + 1-2 small photos',
+                    decorations: '2-4 stickers around photos',
                   },
-                  notes: 'string',
-                },
-              }),
-            },
-            ...imagesB64.map((b64) => ({
-              type: 'image_url',
-              image_url: { url: `data:image/png;base64,${b64}` },
-            })),
-          ],
-        },
-      ],
-    });
+                  output_schema: {
+                    style: 'string',
+                    palette: ['string'],
+                    backgroundPrompt: 'string',
+                    elements: [{ id: 'string', kind: 'sticker|frame|decoration', prompt: 'string' }],
+                    layout: {
+                      canvas: { width: 'number', height: 'number' },
+                      backgroundStyle: 'paper|stationery|minimal|poster',
+                      photos: [
+                        {
+                          id: 'string',
+                          sourceIndex: 'number',
+                          x: '0~1',
+                          y: '0~1',
+                          w: '0~1',
+                          h: '0~1',
+                          rotate: 'number',
+                          style: 'polaroid|tape|clean',
+                          cornerRadius: 'number',
+                          shadow: 'boolean',
+                        },
+                      ],
+                      texts: [
+                        {
+                          id: 'string',
+                          kind: 'date|title|body',
+                          text: 'string',
+                          x: '0~1',
+                          y: '0~1',
+                          w: '0~1',
+                          h: '0~1',
+                          align: 'left|center|right',
+                          fontSize: 'number',
+                          color: 'string',
+                          fontFamily: 'sans|serif',
+                          rotate: 'number',
+                        },
+                      ],
+                      stickers: [{ elementId: 'string', x: '0~1', y: '0~1', w: '0~1', h: '0~1', rotate: 'number' }],
+                    },
+                    notes: 'string',
+                  },
+                }),
+              },
+              ...imagesB64.map((b64) => ({
+                type: 'image_url',
+                image_url: { url: `data:image/png;base64,${b64}` },
+              })),
+            ],
+          },
+        ],
+      });
 
-    // 校验/归一化 layout（兜底防崩）
-    const layout: any = (() => {
-      const l: any = (plan as any)?.layout;
-      if (!l || !Array.isArray(l.photos) || !Array.isArray(l.texts)) return fallbackLayout;
+      // 校验/归一化 layout（兜底防崩）
+      const layout: any = (() => {
+        const l: any = (plan as any)?.layout;
+        if (!l || !Array.isArray(l.photos) || !Array.isArray(l.texts)) return fallbackLayout;
 
-      // canvas 兜底
-      l.canvas = { width, height };
+        // canvas 兜底
+        l.canvas = { width, height };
 
-      // photos：限制 sourceIndex + box
-      l.photos = (l.photos as any[])
-        .filter(Boolean)
-        .map((p: any, idx: number) => {
-          const box = this.normBox(p);
-          const sourceIndex = Math.max(0, Math.min(photoCount - 1, Number(p?.sourceIndex ?? idx)));
-          return {
-            id: String(p?.id || `p${idx}`),
-            sourceIndex,
-            ...box,
-            rotate: Number(p?.rotate ?? 0),
-            style: (p?.style === 'tape' || p?.style === 'clean' || p?.style === 'polaroid') ? p.style : 'polaroid',
-            cornerRadius: Number.isFinite(Number(p?.cornerRadius)) ? Number(p.cornerRadius) : 12,
-            shadow: Boolean(p?.shadow ?? true),
-          };
-        });
+        // photos：限制 sourceIndex + box
+        l.photos = (l.photos as any[])
+          .filter(Boolean)
+          .map((p: any, idx: number) => {
+            const box = this.normBox(p);
+            const sourceIndex = Math.max(0, Math.min(photoCount - 1, Number(p?.sourceIndex ?? idx)));
+            return {
+              id: String(p?.id || `p${idx}`),
+              sourceIndex,
+              ...box,
+              rotate: Number(p?.rotate ?? 0),
+              style: (p?.style === 'tape' || p?.style === 'clean' || p?.style === 'polaroid') ? p.style : 'polaroid',
+              cornerRadius: Number.isFinite(Number(p?.cornerRadius)) ? Number(p.cornerRadius) : 12,
+              shadow: Boolean(p?.shadow ?? true),
+            };
+          });
 
-      // texts：box + 默认值
-      l.texts = (l.texts as any[])
-        .filter(Boolean)
-        .map((t: any, idx: number) => {
-          const box = this.normBox(t);
-          const kind = t?.kind === 'date' || t?.kind === 'title' || t?.kind === 'body' ? t.kind : 'body';
-          return {
-            id: String(t?.id || `t${idx}`),
-            kind,
-            text: String(t?.text || ''),
-            ...box,
-            align: t?.align === 'center' || t?.align === 'right' ? t.align : 'left',
-            fontSize: Number.isFinite(Number(t?.fontSize)) ? Number(t.fontSize) : undefined,
-            color: typeof t?.color === 'string' ? t.color : undefined,
-            fontFamily: t?.fontFamily === 'serif' ? 'serif' : 'sans',
-            rotate: Number(t?.rotate ?? 0),
-          };
-        });
+        // texts：box + 默认值
+        l.texts = (l.texts as any[])
+          .filter(Boolean)
+          .map((t: any, idx: number) => {
+            const box = this.normBox(t);
+            const kind = t?.kind === 'date' || t?.kind === 'title' || t?.kind === 'body' ? t.kind : 'body';
+            return {
+              id: String(t?.id || `t${idx}`),
+              kind,
+              text: String(t?.text || ''),
+              ...box,
+              align: t?.align === 'center' || t?.align === 'right' ? t.align : 'left',
+              fontSize: Number.isFinite(Number(t?.fontSize)) ? Number(t.fontSize) : undefined,
+              color: typeof t?.color === 'string' ? t.color : undefined,
+              fontFamily: t?.fontFamily === 'serif' ? 'serif' : 'sans',
+              rotate: Number(t?.rotate ?? 0),
+            };
+          });
 
-      // stickers：box
-      l.stickers = Array.isArray(l.stickers)
-        ? (l.stickers as any[])
-            .filter(Boolean)
-            .map((s: any) => ({
-              elementId: String(s?.elementId || ''),
-              ...this.normBox(s),
-              rotate: Number(s?.rotate ?? 0),
-            }))
-            .filter((s: any) => s.elementId)
-        : [];
+        // stickers：box
+        l.stickers = Array.isArray(l.stickers)
+          ? (l.stickers as any[])
+              .filter(Boolean)
+              .map((s: any) => ({
+                elementId: String(s?.elementId || ''),
+                ...this.normBox(s),
+                rotate: Number(s?.rotate ?? 0),
+              }))
+              .filter((s: any) => s.elementId)
+          : [];
 
-      return l;
-    })();
+        return l;
+      })();
 
-    // 背景：偏“纸张/手账底”
-    const backgroundPrompt = [
-      'A clean journal scrapbook paper background for a collage layout. Soft paper texture, subtle grain, gentle vignette, lots of whitespace.',
-      `Theme: ${params.prompt}`,
-      `Style: ${(plan as any)?.style || style}`,
-      (plan as any)?.palette?.length ? `Palette: ${(plan as any).palette.join(', ')}` : undefined,
-      `Background design: ${(plan as any)?.backgroundPrompt || ''}`,
-      'Must NOT contain readable text, watermark, logo, or photo-like subjects. Background only.',
-    ]
-      .filter(Boolean)
-      .join('\n');
+      report('background', 0.42, '生成背景');
 
-    const backgroundBase64 = await this.openaiImageB64({
-      prompt: backgroundPrompt,
-      size,
-      background: 'opaque',
-    });
-
-    // 贴纸素材
-    const assets: Array<{ id: string; kind: string; base64: string; prompt: string }> = [];
-    for (const el of ((plan as any)?.elements || []).slice(0, 8)) {
-      const id = el.id || randomUUID();
-      const elementPrompt = [
-        'A single decorative sticker, isolated, centered, high quality, PNG, transparent background. Use simple illustration style, like scrapbook stickers.',
-        `Kind: ${el.kind}`,
+      // 背景：偏“纸张/手账底”
+      const backgroundPrompt = [
+        'A clean journal scrapbook paper background for a collage layout. Soft paper texture, subtle grain, gentle vignette, lots of whitespace.',
+        `Theme: ${params.prompt}`,
         `Style: ${(plan as any)?.style || style}`,
         (plan as any)?.palette?.length ? `Palette: ${(plan as any).palette.join(', ')}` : undefined,
-        `Element: ${el.prompt}`,
-        'No readable text, no watermark, no logo.',
+        `Background design: ${(plan as any)?.backgroundPrompt || ''}`,
+        'Must NOT contain readable text, watermark, logo, or photo-like subjects. Background only.',
       ]
         .filter(Boolean)
         .join('\n');
 
-      const base64 = await this.openaiImageB64({
-        prompt: elementPrompt,
-        size: '1024x1024',
-        background: 'transparent',
+      const backgroundBase64 = await this.openaiImageB64({
+        prompt: backgroundPrompt,
+        size,
+        background: 'opaque',
       });
 
-      assets.push({ id, kind: el.kind, base64, prompt: el.prompt });
-    }
+      report('stickers', 0.62, '生成贴纸素材');
 
-    // 开始合成
-    const bgBuf = Buffer.from(backgroundBase64, 'base64');
-    let canvas = sharp(bgBuf).resize({ width, height, fit: 'cover' }).png();
+      // 贴纸素材
+      const assets: Array<{ id: string; kind: string; base64: string; prompt: string }> = [];
+      for (const el of ((plan as any)?.elements || []).slice(0, 8)) {
+        const id = el.id || randomUUID();
+        const elementPrompt = [
+          'A single decorative sticker, isolated, centered, high quality, PNG, transparent background. Use simple illustration style, like scrapbook stickers.',
+          `Kind: ${el.kind}`,
+          `Style: ${(plan as any)?.style || style}`,
+          (plan as any)?.palette?.length ? `Palette: ${(plan as any).palette.join(', ')}` : undefined,
+          `Element: ${el.prompt}`,
+          'No readable text, no watermark, no logo.',
+        ]
+          .filter(Boolean)
+          .join('\n');
 
-    const composites: any[] = [];
-
-    // 1) 照片层：渲染成拍立得/干净相框
-    for (const p of layout.photos) {
-      const src = photoPngs[p.sourceIndex];
-      if (!src) continue;
-
-      const px = Math.round(p.x * width);
-      const py = Math.round(p.y * height);
-      const pw = Math.round(p.w * width);
-      const ph = Math.round(p.h * height);
-
-      let rendered: Buffer;
-      if (p.style === 'clean') {
-        rendered = await sharp(src)
-          .resize({ width: pw, height: ph, fit: 'cover' })
-          .png()
-          .toBuffer();
-      } else {
-        rendered = await this.renderPolaroidFrame({
-          image: src,
-          width: pw,
-          height: ph,
-          cornerRadius: Math.max(0, Math.round(p.cornerRadius ?? 12)),
-          shadow: Boolean(p.shadow),
+        const base64 = await this.openaiImageB64({
+          prompt: elementPrompt,
+          size: '1024x1024',
+          background: 'transparent',
         });
+
+        assets.push({ id, kind: el.kind, base64, prompt: el.prompt });
       }
 
-      // 旋转（旋转后尺寸会变大，可能超出画布）
-      if (p.rotate) {
-        rendered = await sharp(rendered)
-          .rotate(p.rotate, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      report('compose', 0.82, '合成图片');
+
+      // 开始合成
+      const bgBuf = Buffer.from(backgroundBase64, 'base64');
+      let canvas = sharp(bgBuf).resize({ width, height, fit: 'cover' }).png();
+
+      const composites: any[] = [];
+
+      // 1) 照片层：渲染成拍立得/干净相框
+      for (const p of layout.photos) {
+        const src = photoPngs[p.sourceIndex];
+        if (!src) continue;
+
+        const px = Math.round(p.x * width);
+        const py = Math.round(p.y * height);
+        const pw = Math.round(p.w * width);
+        const ph = Math.round(p.h * height);
+
+        let rendered: Buffer;
+        if (p.style === 'clean') {
+          rendered = await sharp(src)
+            .resize({ width: pw, height: ph, fit: 'cover' })
+            .png()
+            .toBuffer();
+        } else {
+          rendered = await this.renderPolaroidFrame({
+            image: src,
+            width: pw,
+            height: ph,
+            cornerRadius: Math.max(0, Math.round(p.cornerRadius ?? 12)),
+            shadow: Boolean(p.shadow),
+          });
+        }
+
+        // 旋转（旋转后尺寸会变大，可能超出画布）
+        if (p.rotate) {
+          rendered = await sharp(rendered)
+            .rotate(p.rotate, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .png()
+            .toBuffer();
+        }
+
+        const clipped = await this.cropToCanvas({
+          input: rendered,
+          canvasW: width,
+          canvasH: height,
+          left: px,
+          top: py,
+        });
+        if (clipped) composites.push(clipped);
+      }
+
+      // 2) 贴纸层：按 layout.stickers 放置；如果没给 stickers，就默认放 2 个
+      const stickerPlacements = layout.stickers?.length
+        ? layout.stickers
+        : assets.slice(0, 2).map((a, idx) => ({
+            elementId: a.id,
+            ...this.normBox({ x: 0.75 - idx * 0.18, y: 0.2 + idx * 0.55, w: 0.16, h: 0.16 }),
+            rotate: idx === 0 ? 10 : -8,
+          }));
+
+      for (const s of stickerPlacements) {
+        const asset = assets.find((a) => a.id === s.elementId) || assets.find((a) => a.kind === 'sticker');
+        if (!asset) continue;
+
+        const px = Math.round(s.x * width);
+        const py = Math.round(s.y * height);
+        const pw = Math.round(s.w * width);
+        const ph = Math.round(s.h * height);
+
+        let buf = Buffer.from(asset.base64, 'base64');
+        buf = await sharp(buf)
+          .resize({ width: pw, height: ph, fit: 'inside' })
           .png()
           .toBuffer();
+
+        if (s.rotate) {
+          buf = await sharp(buf)
+            .rotate(s.rotate, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .png()
+            .toBuffer();
+        }
+
+        const clipped = await this.cropToCanvas({ input: buf, canvasW: width, canvasH: height, left: px, top: py });
+        if (clipped) composites.push(clipped);
       }
 
-      const clipped = await this.cropToCanvas({ input: rendered, canvasW: width, canvasH: height, left: px, top: py });
-      if (clipped) composites.push(clipped);
-    }
+      // 3) 文本层：用 SVG overlay
+      const textOverlays = layout.texts.map((t: any) => {
+        const px = Math.round(t.x * width);
+        const py = Math.round(t.y * height);
+        const pw = Math.round(t.w * width);
+        const ph = Math.round(t.h * height);
 
-    // 2) 贴纸层：按 layout.stickers 放置；如果没给 stickers，就默认放 2 个
-    const stickerPlacements = layout.stickers?.length
-      ? layout.stickers
-      : assets.slice(0, 2).map((a, idx) => ({
-          elementId: a.id,
-          ...this.normBox({ x: 0.75 - idx * 0.18, y: 0.2 + idx * 0.55, w: 0.16, h: 0.16 }),
-          rotate: idx === 0 ? 10 : -8,
-        }));
+        const isTitle = t.kind === 'title';
+        return {
+          text: t.text,
+          x: px,
+          y: py,
+          w: pw,
+          h: ph,
+          align: t.align,
+          fontSize:
+            t.fontSize ??
+            (isTitle ? Math.round(Math.min(width, height) * 0.07) : Math.round(Math.min(width, height) * 0.032)),
+          color: t.color ?? (isTitle ? '#0f766e' : '#111827'),
+          fontFamily: t.fontFamily ?? (isTitle ? 'serif' : 'sans'),
+          rotate: t.rotate,
+          weight: isTitle ? 700 : 500,
+        };
+      });
 
-    for (const s of stickerPlacements) {
-      const asset = assets.find((a) => a.id === s.elementId) || assets.find((a) => a.kind === 'sticker');
-      if (!asset) continue;
+      const textSvg = this.svgTextOverlay({ width, height, texts: textOverlays });
+      const safeText = await this.cropToCanvas({ input: textSvg, canvasW: width, canvasH: height, left: 0, top: 0 });
+      if (safeText) composites.push(safeText);
 
-      const px = Math.round(s.x * width);
-      const py = Math.round(s.y * height);
-      const pw = Math.round(s.w * width);
-      const ph = Math.round(s.h * height);
-
-      let buf = Buffer.from(asset.base64, 'base64');
-      buf = await sharp(buf)
-        .resize({ width: pw, height: ph, fit: 'inside' })
-        .png()
+      const outBuf = await canvas
+        .composite(composites)
+        .png({ quality: 100 })
         .toBuffer();
 
-      if (s.rotate) {
-        buf = await sharp(buf)
-          .rotate(s.rotate, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-          .png()
-          .toBuffer();
-      }
+      report('done', 1, '完成');
 
-      const clipped = await this.cropToCanvas({ input: buf, canvasW: width, canvasH: height, left: px, top: py });
-      if (clipped) composites.push(clipped);
-    }
+      // 回写 layout 到 plan（确保返回值一致）
+      (plan as any).layout = layout;
+      (plan as any).backgroundPrompt = (plan as any).backgroundPrompt || backgroundPrompt;
 
-    // 3) 文本层：用 SVG overlay
-    const textOverlays = layout.texts.map((t: any) => {
-      const px = Math.round(t.x * width);
-      const py = Math.round(t.y * height);
-      const pw = Math.round(t.w * width);
-      const ph = Math.round(t.h * height);
-
-      const isTitle = t.kind === 'title';
       return {
-        text: t.text,
-        x: px,
-        y: py,
-        w: pw,
-        h: ph,
-        align: t.align,
-        fontSize:
-          t.fontSize ??
-          (isTitle ? Math.round(Math.min(width, height) * 0.07) : Math.round(Math.min(width, height) * 0.032)),
-        color: t.color ?? (isTitle ? '#0f766e' : '#111827'),
-        fontFamily: t.fontFamily ?? (isTitle ? 'serif' : 'sans'),
-        rotate: t.rotate,
-        weight: isTitle ? 700 : 500,
+        imageBase64: outBuf.toString('base64'),
+        backgroundBase64,
+        assets,
+        plan,
       };
-    });
-
-    // 3) 文本层：用 SVG overlay（确保不超过画布）
-    const textSvg = this.svgTextOverlay({ width, height, texts: textOverlays });
-    const safeText = await this.cropToCanvas({ input: textSvg, canvasW: width, canvasH: height, left: 0, top: 0 });
-    if (safeText) composites.push(safeText);
-
-    const outBuf = await canvas
-      .composite(composites)
-      .png({ quality: 100 })
-      .toBuffer();
-
-    // 回写 layout 到 plan（确保返回值一致）
-    (plan as any).layout = layout;
-    (plan as any).backgroundPrompt = (plan as any).backgroundPrompt || backgroundPrompt;
-
-    return {
-      imageBase64: outBuf.toString('base64'),
-      backgroundBase64,
-      assets,
-      plan,
-    };
+    } catch (e: any) {
+      if (e?.name === 'AiError') throw e;
+      throw new AiError({
+        code: 'IMAGE_COMPOSE_ERROR',
+        status: 500,
+        message: e?.message || 'Image compose failed',
+      });
+    }
   }
 }

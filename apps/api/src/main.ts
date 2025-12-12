@@ -7,6 +7,8 @@ import { existsSync, mkdirSync } from 'fs';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const express = require('express');
 
+import { GlobalHttpExceptionFilter } from './common/http-exception.filter';
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
@@ -24,6 +26,8 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  app.useGlobalFilters(new GlobalHttpExceptionFilter());
 
   // 静态文件：用于暴露上传的图片给视觉接口拉取
   const uploadsDir = join(process.cwd(), 'uploads');
