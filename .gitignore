@@ -2,10 +2,9 @@
 node_modules
 
 # builds
+**/dist/
 /dist
 /build
-/apps/api/dist
-/apps/web/dist
 # env
 .env
 .env.*
