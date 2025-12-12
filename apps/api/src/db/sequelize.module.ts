@@ -1,7 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Sequelize } from 'sequelize-typescript';
-import { NoteModel } from '../notes/note.model';
+import { NoteModel } from '../modules/notes/note.model';
 
 @Global()
 @Module({
@@ -22,7 +22,6 @@ import { NoteModel } from '../notes/note.model';
         });
 
         await sequelize.authenticate();
-        // 简化：开发阶段自动同步。生产建议改为 migrations。
         await sequelize.sync();
 
         return sequelize;
