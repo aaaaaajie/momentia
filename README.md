@@ -2,4 +2,6 @@
 面向自媒体创作者、手账爱好者、学生的轻量工具类产品，用户上传图片/输入文字描述/粘贴语音转文字内容，工具会自动提取关键元素，通过多模态大模型生成风格统一的创意拼贴画（如复古手账风、赛博朋克风、治愈插画风）
 
 ## 演示
-<video src="./preview/preview.mp4" controls></video>
+<video controls width="600">
+  <source src="preview/preview.mp4" type="video/mp4">
+</video>
