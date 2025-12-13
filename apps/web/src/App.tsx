@@ -125,19 +125,20 @@ export default function App() {
   );
 
   return (
-    <Flex vertical style={{ height: '100vh', background: '#f6f7fb' }}>
+    <Flex vertical className="mm-app">
       <GlobalAnimStyle />
       <AppHeader templateId={templateId} onChangeTemplateId={setTemplateId} />
 
       <div
         ref={listRef}
+        className="mm-list"
         style={{
           flex: 1,
           overflow: 'auto',
           padding: '18px 16px 10px',
         }}
       >
-        <div style={{ maxWidth: 980, margin: '0 auto' }}>
+        <div className="mm-panel">
           <ChatMessages
             messages={messages}
             loading={loading}
