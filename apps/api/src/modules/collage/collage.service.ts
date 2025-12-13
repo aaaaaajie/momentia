@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { CollageGenerateResult } from './collage.types';
 import { COLLAGE_PROVIDERS } from './core/collage-provider.token';
 import type { CollageGenerateParams, CollageProvider } from './core/collage.provider';
+import { AiError } from '../../common/errors/ai-error';
 
 @Injectable()
 export class CollageService {
@@ -16,7 +17,12 @@ export class CollageService {
     const p = this.providers.find((x) => x.id.toLowerCase() === key);
     if (!p) {
       const supported = this.providers.map((x) => x.id).sort();
-      throw new Error(`Unsupported collage provider: ${id}. Supported: ${supported.join(', ')}`);
+      throw new AiError({
+        code: 'UNSUPPORTED_PROVIDER',
+        status: 400,
+        message: `Unsupported collage provider: ${id}. Supported: ${supported.join(', ')}`,
+        details: { requested: id, supported },
+      });
     }
     return p;
   }

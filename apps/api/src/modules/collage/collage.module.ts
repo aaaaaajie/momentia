@@ -6,12 +6,16 @@ import { CollageService } from './collage.service';
 
 import { COLLAGE_PROVIDERS } from './core/collage-provider.token';
 import { OpenAiCollageProvider } from './providers/openai/openai-collage.provider';
+import { OpenAiClient } from './providers/openai/openai.client';
+import { OpenAiConfig } from './providers/openai/openai.config';
 
 @Module({
   imports: [ConfigModule],
   controllers: [CollageController],
   providers: [
     CollageService,
+    OpenAiConfig,
+    OpenAiClient,
     OpenAiCollageProvider,
     {
       provide: COLLAGE_PROVIDERS,

@@ -13,8 +13,6 @@ export default function Composer(props: {
   const maxImages = 3;
 
   const ensureThumb = (file: UploadFile): UploadFile => {
-    // antd 在 beforeUpload=false 的情况下，不一定会为本地文件自动生成 thumbUrl。
-    // 这里手动用 URL.createObjectURL 生成，保证立即可见缩略图。
     if (file.thumbUrl || file.url) return file;
     const origin = file.originFileObj as File | undefined;
     if (!origin) return file;
@@ -45,7 +43,6 @@ export default function Composer(props: {
   };
 
   const getAngle = (idx: number) => {
-    // 你要求：第1张逆时针；第2张顺时针小角度；第3张顺时针稍大（远小于 100°）
     const angles = [-10, 4, 10];
     return angles[idx % angles.length];
   };
@@ -91,7 +88,6 @@ export default function Composer(props: {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mm-photo-stack" style={{ ['--mm-count' as any]: props.fileList.length }}>
-              {/* 用一个相对容器手工渲染卡片，右侧的 + 是独立卡片，确保始终在“照片右边” */}
               <div className="mm-photo-deck">
                 {props.fileList.slice(0, maxImages).map((file, idx) => {
                   const src = (file.thumbUrl || file.url) as string | undefined;
@@ -181,7 +177,7 @@ export default function Composer(props: {
                 paddingInline: 0,
               }}
             >
-              ↑
+              {!props.loading ? '↑' : null}
             </Button>
           </div>
         </div>

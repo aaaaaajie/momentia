@@ -1,5 +1,6 @@
 export type AiErrorCode =
   | 'BAD_REQUEST'
+  | 'UNSUPPORTED_PROVIDER'
   | 'OPENAI_CHAT_TIMEOUT'
   | 'OPENAI_CHAT_NETWORK'
   | 'OPENAI_CHAT_HTTP'
@@ -12,9 +13,14 @@ export type AiErrorCode =
 export class AiError extends Error {
   code: AiErrorCode;
   status: number;
-  details?: any;
+  details?: unknown;
 
-  constructor(params: { code: AiErrorCode; message: string; status?: number; details?: any }) {
+  constructor(params: {
+    code: AiErrorCode;
+    message: string;
+    status?: number;
+    details?: unknown;
+  }) {
     super(params.message);
     this.name = 'AiError';
     this.code = params.code;
@@ -23,6 +29,11 @@ export class AiError extends Error {
   }
 }
 
-export function isAiError(e: any): e is AiError {
-  return e && typeof e === 'object' && e.name === 'AiError' && typeof e.code === 'string';
+export function isAiError(e: unknown): e is AiError {
+  return (
+    !!e &&
+    typeof e === 'object' &&
+    (e as any).name === 'AiError' &&
+    typeof (e as any).code === 'string'
+  );
 }

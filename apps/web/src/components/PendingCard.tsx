@@ -159,7 +159,6 @@ export default function PendingCard(props: {
         </div>
       </div>
 
-      {/* 阶段说明（可选，小字） */}
       <div style={{ marginTop: 8 }}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {(props.progress?.stage || 'progress') + (props.progress?.message ? `：${props.progress.message}` : '')}

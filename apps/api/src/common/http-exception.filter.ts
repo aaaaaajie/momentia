@@ -6,7 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { Response } from 'express';
-import { AiError, isAiError } from './ai-error';
+import { isAiError } from './errors/ai-error';
 
 @Catch()
 export class GlobalHttpExceptionFilter implements ExceptionFilter {
@@ -14,7 +14,6 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const res = ctx.getResponse<Response>();
 
-    // AiError: our custom errors with explicit code/status
     if (isAiError(exception)) {
       const body = {
         statusCode: exception.status,

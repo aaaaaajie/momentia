@@ -5,6 +5,7 @@ import { GenerateCollageDto } from './collage.dto';
 import { Response } from 'express';
 
 import { sseHeaders, sseWrite } from './progress/emitter';
+import { isAiError } from '../../common/errors/ai-error';
 
 @Controller('ai')
 export class CollageController {
@@ -49,11 +50,12 @@ export class CollageController {
       sseWrite(res, 'done', result);
       res.end();
     } catch (e: any) {
+      const statusCode = isAiError(e) ? e.status : 500;
       sseWrite(res, 'error', {
         code: e?.code || 'UNKNOWN',
         message: e?.message || 'Unknown error',
         details: e?.details,
-        statusCode: e?.status || 500,
+        statusCode,
       });
       res.end();
     }

@@ -192,7 +192,6 @@ export default function GlobalAnimStyle() {
       color: #667085;
     }
 
-    /* 有照片时的圆形上传按钮（图二） */
     .mm-photo-add-fab {
       position: absolute;
       right: -8px;

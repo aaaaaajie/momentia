@@ -22,7 +22,6 @@ export function getCanvas(params: CollageGenerateParams) {
 
 export function getDefaultStickerPlacements(params: {
   assets: Array<{ id: string }>;
-  /** 当模型未返回 stickers 时的默认 box 参数 */
   boxes?: Array<{ x: number; y: number; w: number; h: number; rotate: number }>;
 }) {
   const boxes =

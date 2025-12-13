@@ -1,37 +1,31 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Sequelize } from 'sequelize-typescript';
-import { NoteModel } from './note.model';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { CreateNoteDto, UpdateNoteDto } from './dto';
+import { NOTES_REPOSITORY, NotesRepository } from './repository/notes.repository';
 
 @Injectable()
 export class NotesService {
-  constructor(private readonly sequelize: Sequelize) {}
+  constructor(
+    @Inject(NOTES_REPOSITORY)
+    private readonly repo: NotesRepository,
+  ) {}
 
   async list() {
-    return NoteModel.findAll({ order: [['createdAt', 'DESC']] });
+    return this.repo.list();
   }
 
   async get(id: string) {
-    const note = await NoteModel.findByPk(id);
+    const note = await this.repo.get(id);
     if (!note) throw new NotFoundException('note not found');
     return note;
   }
 
   async create(dto: CreateNoteDto) {
-    const note = NoteModel.build({
-      title: dto.title,
-      content: dto.content ?? null,
-    } as any);
-    await note.save();
-    return note;
+    return this.repo.create(dto);
   }
 
   async update(id: string, dto: UpdateNoteDto) {
-    const note = await this.get(id);
-    await note.update({
-      ...(dto.title !== undefined ? { title: dto.title } : {}),
-      ...(dto.content !== undefined ? { content: dto.content } : {}),
-    });
-    return note;
+    // 保持应用层语义：不存在则 404
+    await this.get(id);
+    return this.repo.update(id, dto);
   }
 }
