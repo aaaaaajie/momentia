@@ -1,4 +1,4 @@
-import { AiError } from '../../../common/errors/ai-error';
+import { AiError } from '../../../../common/errors/ai-error';
 
 const sharp = require('sharp');
 

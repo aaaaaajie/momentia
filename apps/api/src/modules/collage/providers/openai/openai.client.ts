@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import { AiError } from '../../../../common/errors/ai-error';
-import { OpenAiConfig } from './openai.config';
+import { AiProviderConfig } from '../ai-provider.config';
 
 export type OpenAiChatJsonParams = {
   model?: string;
@@ -16,7 +16,7 @@ export type OpenAiImageB64Params = {
 
 @Injectable()
 export class OpenAiClient {
-  constructor(private readonly cfg: OpenAiConfig) {}
+  constructor(private readonly ai: AiProviderConfig) {}
 
   private async withTimeout<T>(promise: Promise<T>, ms: number, label: string, code: any) {
     const timeoutMs = Math.max(1000, Math.floor(ms));
@@ -103,8 +103,8 @@ export class OpenAiClient {
   }
 
   async chatJson<T>(params: OpenAiChatJsonParams): Promise<T> {
-    const env = this.cfg.getEnv();
-    const model = params.model || env.chatModel;
+    const env = this.ai.getEnv('openai');
+    const model = params.model || env.chatModel || 'gpt-4o';
 
     let res: Response;
     try {
@@ -123,7 +123,7 @@ export class OpenAiClient {
           }),
           ...(env.proxyDispatcher ? { dispatcher: env.proxyDispatcher } : {}),
         } as any),
-        env.chatTimeoutMs,
+        env.chatTimeoutMs ?? 60000,
         'OpenAI chat',
         'OPENAI_CHAT_TIMEOUT',
       );
@@ -176,8 +176,8 @@ export class OpenAiClient {
   }
 
   async imageB64(params: OpenAiImageB64Params): Promise<string> {
-    const env = this.cfg.getEnv();
-    const model = env.imageModel;
+    const env = this.ai.getEnv('openai');
+    const model = env.imageModel || 'gpt-image-1';
 
     const normalizedSize = (() => {
       const m = /^\s*(\d+)\s*x\s*(\d+)\s*$/i.exec(params.size || '');
@@ -210,7 +210,7 @@ export class OpenAiClient {
             }),
           },
         }),
-        env.imagesTimeoutMs,
+        env.imagesTimeoutMs ?? 120000,
         'OpenAI images',
         'OPENAI_IMAGES_TIMEOUT',
       );
@@ -254,7 +254,7 @@ export class OpenAiClient {
           fetch(url, {
             ...(env.proxyDispatcher ? { dispatcher: env.proxyDispatcher } : {}),
           } as any),
-          env.imagesTimeoutMs,
+          env.imagesTimeoutMs ?? 120000,
           'OpenAI images download',
           'OPENAI_IMAGES_TIMEOUT',
         );

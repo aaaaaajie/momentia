@@ -1,18 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 
-import type { CollageGenerateResult, CollagePlan } from '../../collage.types';
-import type { CollageGenerateParams, CollageProvider } from '../../core/collage.provider';
-import { normBox } from '../../core/collage.util';
+import type { CollageGenerateParams, CollageGenerateResult, CollagePlan } from '../../collage.types';
+import type { CollageProvider } from '../provider.contract';
 import { AiError } from '../../../../common/errors/ai-error';
-import { createReporter, getCanvas, getDefaultStickerPlacements, normalizeLayout } from '../../core/collage.generate-helpers';
+import { createReporter, getCanvas, getDefaultStickerPlacements, normalizeLayout } from '../helpers/handle-generate.helpers';
 import {
     cropToCanvas,
     prepareImages as prepareImagesShared,
     renderPolaroidFrame as renderPolaroidFrameShared,
     svgTextOverlay as svgTextOverlayShared,
-} from '../../core/collage.image-helpers';
+} from '../helpers/handle-image.helpers';
 import { OpenAiClient } from './openai.client';
+import { normBox } from '../../utils';
 
 const sharp = require('sharp');
 

@@ -62,3 +62,13 @@ export type CollageGenerateResult = {
   assets: Array<{ id: string; kind: string; base64: string; prompt: string }>;
   plan: CollagePlan;
 };
+
+export type CollageGenerateParams = {
+  prompt: string;
+  style?: string;
+  templateId?: string;
+  files?: any[];
+  width?: number;
+  height?: number;
+  onProgress?: (e: { stage: string; percent: number; message?: string }) => void;
+};

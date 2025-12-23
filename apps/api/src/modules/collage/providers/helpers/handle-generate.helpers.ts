@@ -1,6 +1,6 @@
-import type { CollageGenerateParams } from './collage.provider';
-import type { CollagePlan } from '../collage.types';
-import { normBox } from './collage.util';
+import { CollageGenerateParams, CollagePlan } from "../../collage.types";
+import { normBox } from "../../utils";
+
 
 export type CollageReporter = (stage: string, percent: number, message?: string) => void;
 
@@ -14,9 +14,29 @@ export function createReporter(params: CollageGenerateParams): CollageReporter {
   };
 }
 
+// Doubao Seedream 4.5 约束：image size must be at least 3,686,400 pixels
+// 这里做一个兜底：当调用方没传或传得过小，自动抬升到满足阈值的尺寸。
+const MIN_IMAGE_PIXELS = 3_686_400;
+
+function ensureMinPixelsSize(width: number, height: number) {
+  const w = Math.max(1, Math.floor(width));
+  const h = Math.max(1, Math.floor(height));
+  const pixels = w * h;
+  if (pixels >= MIN_IMAGE_PIXELS) return { width: w, height: h };
+
+  // 保持纵横比，整体放大到满足最小像素数
+  const scale = Math.sqrt(MIN_IMAGE_PIXELS / pixels);
+  return {
+    width: Math.ceil(w * scale),
+    height: Math.ceil(h * scale),
+  };
+}
+
 export function getCanvas(params: CollageGenerateParams) {
-  const width = params.width ?? 1024;
-  const height = params.height ?? 1400;
+  // 默认提升到满足 Doubao 最小像素数的安全值
+  const rawWidth = params.width ?? 1920;
+  const rawHeight = params.height ?? 1920;
+  const { width, height } = ensureMinPixelsSize(rawWidth, rawHeight);
   return { width, height, size: `${width}x${height}` };
 }
 
