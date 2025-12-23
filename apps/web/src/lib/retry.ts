@@ -1,9 +1,6 @@
 export function canRetryByCode(code?: string) {
-  const c = String(code || '').toUpperCase();
-  return (
-    c === 'OPENAI_IMAGES_NETWORK' ||
-    c === 'OPENAI_IMAGES_TIMEOUT' ||
-    c === 'OPENAI_CHAT_NETWORK' ||
-    c === 'OPENAI_CHAT_TIMEOUT'
-  );
+  // 策略 A：任何错误都允许在页面上重试。
+  // 这里保留 code 入参是为了兼容既有调用，不再做白名单过滤。
+  void code;
+  return true;
 }

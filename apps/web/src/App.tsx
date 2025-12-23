@@ -8,7 +8,7 @@ import type { ChatMessage } from './components/ChatMessages';
 import Composer from './components/Composer';
 import GlobalAnimStyle from './components/GlobalAnimStyle';
 import { uid } from './lib/utils';
-import { composeStream, filesFromUploadList } from './lib/composeStream';
+import { composeStream } from './lib/composeStream';
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -29,6 +29,7 @@ export default function App() {
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const lastRequestRef = useRef<{ prompt: string; files: File[]; templateId: string } | null>(null);
+  const requestByAssistantMsgIdRef = useRef<Record<string, { prompt: string; files: File[]; templateId: string }>>({});
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -47,6 +48,8 @@ export default function App() {
             override,
             onInit: ({ userMsg, pendingMsg, pendingId, prompt, files, templateId }) => {
               lastRequestRef.current = { prompt, files, templateId };
+              requestByAssistantMsgIdRef.current[pendingId] = { prompt, files, templateId };
+
               setMessages((prev) => [...prev, userMsg, pendingMsg]);
               if (!override) setInput('');
               setLoading(true);
@@ -73,7 +76,7 @@ export default function App() {
               scrollToBottom();
             },
             onDone: (pendingId, data, override) => {
-              const imgB64 = data?.imageBase64;
+              // keep mapping so user can regenerate later
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === pendingId
@@ -83,7 +86,7 @@ export default function App() {
                         progress: { stage: 'done', percent: 1, message: '完成' },
                         text: '已生成。你可以继续补充：比如“再复古一点 / 多加贴纸 / 标题改成……” 。',
                         result: data,
-                        images: imgB64 ? [`data:image/png;base64,${imgB64}`] : undefined,
+                        images: data?.imageBase64 ? [`data:image/png;base64,${data.imageBase64}`] : undefined,
                       }
                     : m,
                 ),
@@ -146,6 +149,11 @@ export default function App() {
               const last = lastRequestRef.current;
               if (!last) return;
               void send({ prompt: last.prompt, files: last.files, templateId: last.templateId });
+            }}
+            onRetryByMessage={(messageId) => {
+              const req = requestByAssistantMsgIdRef.current[messageId];
+              if (!req) return;
+              void send({ prompt: req.prompt, files: req.files, templateId: req.templateId });
             }}
           />
         </div>
