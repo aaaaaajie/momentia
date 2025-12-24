@@ -4,7 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { CollageController } from './collage.controller';
 import { CollageService } from './collage.service';
 
-import { OpenAiCollageProvider } from './providers/openai/openai-collage.provider';
+import { OpenAiCollageProvider } from './providers/openai/openai.provider';
 import { OpenAiClient } from './providers/openai/openai.client';
 import { DoubaoCollageProvider } from './providers/doubao/doubao.provider';
 import { DoubaoClient } from './providers/doubao/doubao.client';

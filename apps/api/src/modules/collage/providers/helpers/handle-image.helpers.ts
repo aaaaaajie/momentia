@@ -214,10 +214,6 @@ export async function prepareImages(files: any[] | undefined, maxCount = 3): Pro
   return { photoFiles, photoCount, photoPngs, imagesB64 };
 }
 
-/**
- * 可选：将错误包装为 AiError（用于 provider 的统一 catch 逻辑）。
- * 目前未强制使用，保留是为将来新增 provider 复用。
- */
 export function wrapAsAiError(e: any, params: { code: string; status: number; fallbackMessage: string }) {
   if (e?.name === 'AiError') return e;
   return new AiError({

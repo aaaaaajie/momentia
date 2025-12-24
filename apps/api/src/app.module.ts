@@ -11,7 +11,7 @@ import { CollageModule } from './modules/collage/collage.module';
       isGlobal: true,
       envFilePath: ['.env', '../../.env'],
     }),
-    SequelizeModule,
+    // SequelizeModule,
     HealthModule,
     NotesModule,
 

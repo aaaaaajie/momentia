@@ -57,7 +57,13 @@ pnpm --filter @momentia/web dev
 
 ## Monorepo 架构
 
-本仓库采用 **pnpm workspace** 的 Monorepo 结构，按「应用（apps）」与「可复用包（packages）」分层。
+本仓库采用 **pnpm workspace** 的 Monorepo 结构，按「应用（apps）」与「可复用包（packages）」分层，并包含用于静态预览/演示的 `preview/`。
+
+### 目录总览
+
+- `apps/`：可独立运行的应用（后端 API / 前端 Web）
+- `packages/`：多应用复用的共享包
+- `preview/`：静态演示/预览资源（如有）
 
 ### apps/
 
@@ -68,7 +74,7 @@ pnpm --filter @momentia/web dev
 - 技术栈：NestJS + Express + Sequelize + PostgreSQL
 - 主要职责：
   - 提供拼贴/生成相关的 HTTP API
-  - 文件上传与静态资源（`uploads/`）
+  - 文件上传与静态资源托管（`apps/api/uploads/`）
   - 与第三方多模态模型（OpenAI / 百度 / 豆包等 provider）交互
 
 关键目录：
@@ -78,17 +84,19 @@ pnpm --filter @momentia/web dev
   - `http-exception.filter.ts`：统一异常处理
   - `errors/`：自定义错误类型（例如 AI 调用相关错误）
 - `apps/api/src/db/`：数据库相关（Sequelize 初始化/模块化封装）
-- `apps/api/src/health/`：健康检查接口（通常用于探活/部署）
+- `apps/api/src/health/`：健康检查接口（探活/部署）
 - `apps/api/src/modules/`：核心业务模块
   - `collage/`：拼贴生成相关 API（controller/service/dto/types）
-    - `core/`：拼贴生成核心逻辑与抽象
-      - `collage.provider.ts`：provider 抽象层（屏蔽不同厂商差异）
-      - `collage-provider.token.ts`：Nest DI token
-      - `collage.*-helpers.ts`：生成/图像处理辅助工具
-    - `providers/`：各 AI 厂商的具体实现
-      - `openai/`：OpenAI 客户端/配置/provider 实现
-      - `baidu/`、`doubao/`：其他厂商实现
-    - `progress/`：生成过程进度事件（例如 emitter）
+    - `providers/`：AI 厂商适配层（屏蔽不同厂商差异）
+      - `provider.contract.ts`：provider 能力约定（接口/抽象）
+      - `provider.token.ts`：Nest DI token
+      - `ai-provider.config.ts`：provider 配置聚合
+      - `helpers/`：生成、图像处理等辅助函数
+      - `openai/`：OpenAI provider 实现
+      - `baidu/`：百度 provider 实现
+      - `doubao/`：豆包 provider 实现
+    - `progress/`：生成过程进度事件（如 emitter）
+    - `utils/`：拼贴业务内部复用工具
   - `notes/`：笔记/数据存储相关
     - `repository/`：仓储层抽象与 Sequelize 实现
 
@@ -96,7 +104,7 @@ pnpm --filter @momentia/web dev
 
 #### apps/web（Vite + React 前端）
 
-- 技术栈：Vite + React + antd
+- 技术栈：Vite + React
 - 主要职责：
   - 用户交互与上传/输入
   - 调用后端 API 并展示生成进度与生成结果
@@ -105,11 +113,11 @@ pnpm --filter @momentia/web dev
 
 - `apps/web/src/main.tsx`：前端入口
 - `apps/web/src/App.tsx`：应用主组件
-- `apps/web/src/components/`：UI 组件（消息流、输入框、下载按钮等）
+- `apps/web/src/components/`：UI 组件（消息流、输入框、下载等）
 - `apps/web/src/lib/`：前端工具库（如 stream 处理、重试、通用工具）
 
 ### packages/
 
 放置在多个应用间复用的**共享包**。
 
-- `packages/shared/`：跨 `api/web` 共享的类型、工具函数或常量的候选位置
+- `packages/shared/`：跨 `api/web` 共享的类型、工具函数或常量
