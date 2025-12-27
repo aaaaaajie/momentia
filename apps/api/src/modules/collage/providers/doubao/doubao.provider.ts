@@ -77,6 +77,12 @@ export class DoubaoCollageProvider implements CollageProvider {
       });
     }
 
+    // 文案区域：根据画布尺寸给更充足的高度，避免长句被截断
+    const minSide = Math.min(width, height);
+    const dateH = 0.07;
+    const titleH = 0.125;
+    const bodyH = 0.105; // 原来 0.07 太紧，改为更合理的默认高度
+
     return {
       canvas: { width, height },
       backgroundStyle: 'paper',
@@ -86,9 +92,9 @@ export class DoubaoCollageProvider implements CollageProvider {
           id: 't-date',
           kind: 'date',
           text: new Date().toISOString().slice(0, 10),
-          ...normBox({ x: 0.08, y: 0.07, w: 0.84, h: 0.08 }),
+          ...normBox({ x: 0.08, y: 0.07, w: 0.84, h: dateH }),
           align: 'left',
-          fontSize: Math.round(Math.min(width, height) * 0.04),
+          fontSize: Math.round(minSide * 0.04),
           color: '#1f2937',
           fontFamily: 'sans',
         },
@@ -96,9 +102,9 @@ export class DoubaoCollageProvider implements CollageProvider {
           id: 't-title',
           kind: 'title',
           text: '海边漫步，自由如风',
-          ...normBox({ x: 0.08, y: 0.15, w: 0.84, h: 0.12 }),
+          ...normBox({ x: 0.08, y: 0.15, w: 0.84, h: titleH }),
           align: 'left',
-          fontSize: Math.round(Math.min(width, height) * 0.075),
+          fontSize: Math.round(minSide * 0.075),
           color: '#0f766e',
           fontFamily: 'serif',
         },
@@ -106,9 +112,9 @@ export class DoubaoCollageProvider implements CollageProvider {
           id: 't-body',
           kind: 'body',
           text: '今天和朋友一起来到海边，阳光晒在身上暖暖的，听着海浪，吹着海风，特别的治愈。',
-          ...normBox({ x: 0.08, y: 0.26, w: 0.84, h: 0.07 }),
+          ...normBox({ x: 0.08, y: 0.27, w: 0.84, h: bodyH }),
           align: 'left',
-          fontSize: Math.round(Math.min(width, height) * 0.032),
+          fontSize: Math.round(minSide * 0.032),
           color: '#111827',
           fontFamily: 'sans',
         },
@@ -310,9 +316,22 @@ export class DoubaoCollageProvider implements CollageProvider {
       const px = Math.round(t.x * params.width);
       const py = Math.round(t.y * params.height);
       const pw = Math.round(t.w * params.width);
-      const ph = Math.round(t.h * params.height);
+      let ph = Math.round(t.h * params.height);
 
       const isTitle = t.kind === 'title';
+      const fontSize =
+        t.fontSize ??
+        (isTitle ? Math.round(Math.min(params.width, params.height) * 0.07) : Math.round(Math.min(params.width, params.height) * 0.032));
+
+      // body 文案根据长度给一点自适应高度（配合 svgTextOverlay 的自动换行）
+      if (t.kind === 'body') {
+        const textLen = String(t.text || '').trim().length;
+        const approxLines = Math.max(1, Math.ceil(textLen / 26));
+        const lineHeight = Math.round(fontSize * 1.25);
+        const needH = approxLines * lineHeight + Math.round(fontSize * 0.4);
+        ph = Math.max(ph, needH);
+      }
+
       return {
         text: t.text,
         x: px,
@@ -320,9 +339,7 @@ export class DoubaoCollageProvider implements CollageProvider {
         w: pw,
         h: ph,
         align: t.align,
-        fontSize:
-          t.fontSize ??
-          (isTitle ? Math.round(Math.min(params.width, params.height) * 0.07) : Math.round(Math.min(params.width, params.height) * 0.032)),
+        fontSize,
         color: t.color ?? (isTitle ? '#0f766e' : '#111827'),
         fontFamily: t.fontFamily ?? (isTitle ? 'serif' : 'sans'),
         rotate: t.rotate,
@@ -342,6 +359,49 @@ export class DoubaoCollageProvider implements CollageProvider {
     return canvas.composite(params.composites).png({ quality: 100 }).toBuffer();
   }
 
+  private getDefaultTexts(params: CollageGenerateParams, canvas: { width: number; height: number }) {
+    const minSide = Math.min(canvas.width, canvas.height);
+
+    const trim = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+
+    const dateText = trim(params.dateText) || new Date().toISOString().slice(0, 10);
+    const titleText = trim(params.titleText);
+    const bodyText = trim(params.bodyText) || (!titleText ? trim(params.prompt) : '');
+
+    return {
+      date: {
+        id: 't-date',
+        kind: 'date',
+        text: dateText,
+        ...normBox({ x: 0.08, y: 0.07, w: 0.84, h: 0.07 }),
+        align: 'left',
+        fontSize: Math.round(minSide * 0.04),
+        color: '#1f2937',
+        fontFamily: 'sans',
+      },
+      title: {
+        id: 't-title',
+        kind: 'title',
+        text: titleText,
+        ...normBox({ x: 0.08, y: 0.15, w: 0.84, h: 0.125 }),
+        align: 'left',
+        fontSize: Math.round(minSide * 0.075),
+        color: '#0f766e',
+        fontFamily: 'serif',
+      },
+      body: {
+        id: 't-body',
+        kind: 'body',
+        text: bodyText,
+        ...normBox({ x: 0.08, y: 0.27, w: 0.84, h: 0.105 }),
+        align: 'left',
+        fontSize: Math.round(minSide * 0.032),
+        color: '#111827',
+        fontFamily: 'sans',
+      },
+    };
+  }
+
   async generate(params: CollageGenerateParams): Promise<CollageGenerateResult> {
     const report = this.createReporter(params);
 
@@ -356,7 +416,9 @@ export class DoubaoCollageProvider implements CollageProvider {
 
       const fallbackLayout = this.defaultLayout({ width, height, photoCount });
 
-      // 当前项目的“排版方案”由 OpenAI 生成；豆包接入先复用 fallbackLayout 保证拼贴流程可用。
+      const defaultTexts = this.getDefaultTexts(params, { width, height });
+      (fallbackLayout as any).texts = [defaultTexts.date, defaultTexts.title, defaultTexts.body].filter((x: any) => String(x.text || '').trim());
+
       const plan: CollagePlan = {
         style,
         palette: [],

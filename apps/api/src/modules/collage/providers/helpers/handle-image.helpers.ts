@@ -100,8 +100,52 @@ export function svgTextOverlay(params: {
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
+      .replace(/\"/g, '&quot;')
       .replace(/'/g, '&#39;');
+
+  // 估算中英文字符宽度（中文≈1em，英文/数字≈0.55em，空格≈0.33em）
+  const charUnits = (ch: string) => {
+    if (ch === ' ') return 0.33;
+    if (/^[\u4e00-\u9fa5]$/.test(ch)) return 1.0;
+    if (/^[A-Z]$/.test(ch)) return 0.65;
+    if (/^[a-z0-9]$/.test(ch)) return 0.55;
+    return 0.8;
+  };
+
+  const wrapText = (text: string, maxWidthPx: number, fontSize: number) => {
+    const s = String(text || '').trim();
+    if (!s) return [] as string[];
+
+    // 最少也要能容纳 2 个中文字符，避免极小宽度时死循环
+    const maxUnits = Math.max(2, maxWidthPx / Math.max(1, fontSize));
+
+    const lines: string[] = [];
+    let line = '';
+    let units = 0;
+
+    for (const ch of s) {
+      // 显式换行
+      if (ch === '\n' || ch === '\r') {
+        if (line.trim()) lines.push(line.trimEnd());
+        line = '';
+        units = 0;
+        continue;
+      }
+
+      const u = charUnits(ch);
+      if (line && units + u > maxUnits) {
+        lines.push(line.trimEnd());
+        line = '';
+        units = 0;
+      }
+
+      line += ch;
+      units += u;
+    }
+
+    if (line.trim()) lines.push(line.trimEnd());
+    return lines;
+  };
 
   const els = params.texts
     .filter((t) => t?.text?.trim())
@@ -115,18 +159,32 @@ export function svgTextOverlay(params: {
       const align = t.align || 'left';
       const anchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start';
       const xAnchor = align === 'center' ? x + w / 2 : align === 'right' ? x + w : x;
-      const yBase = y + fontSize;
       const family = t.fontFamily === 'serif' ? 'Georgia, serif' : 'Arial, sans-serif';
       const weight = t.weight ?? 600;
-      const transform = t.rotate ? ` transform="rotate(${t.rotate} ${x + w / 2} ${y + h / 2})"` : '';
+      const transform = t.rotate ? ` transform=\"rotate(${t.rotate} ${x + w / 2} ${y + h / 2})\"` : '';
 
-      return `<text${transform} x="${xAnchor}" y="${yBase}" text-anchor="${anchor}" fill="${color}" font-family="${family}" font-size="${fontSize}" font-weight="${weight}">${escape(
-        t.text,
-      )}</text>`;
+      // 行高取 1.25 倍，最多渲染到文本框高度以内（超出的省略）
+      const lineHeight = Math.round(fontSize * 1.25);
+      const maxLines = Math.max(1, Math.floor(h / Math.max(1, lineHeight)));
+
+      const lines = wrapText(t.text, w, fontSize);
+      const clipped = lines.slice(0, maxLines);
+
+      // 让文本块在框内更“贴上”，避免第一行 yBase 直接顶到边缘
+      const yBase0 = y + fontSize;
+
+      const tspans = clipped
+        .map((ln, idx) => {
+          const dy = idx === 0 ? 0 : lineHeight;
+          return `<tspan x=\"${xAnchor}\" dy=\"${dy}\">${escape(ln)}</tspan>`;
+        })
+        .join('');
+
+      return `<text${transform} x=\"${xAnchor}\" y=\"${yBase0}\" text-anchor=\"${anchor}\" fill=\"${color}\" font-family=\"${family}\" font-size=\"${fontSize}\" font-weight=\"${weight}\">${tspans}</text>`;
     })
     .join('');
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${params.width}" height="${params.height}">${els}</svg>`;
+  const svg = `<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${params.width}\" height=\"${params.height}\">${els}</svg>`;
   return Buffer.from(svg);
 }
 

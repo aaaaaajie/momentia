@@ -67,6 +67,12 @@ export type CollageGenerateParams = {
   prompt: string;
   style?: string;
   templateId?: string;
+
+  // 文案：可由前端传入，最终用于图片文字渲染
+  dateText?: string;
+  titleText?: string;
+  bodyText?: string;
+
   files?: any[];
   width?: number;
   height?: number;

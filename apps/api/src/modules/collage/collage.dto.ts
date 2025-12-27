@@ -20,6 +20,19 @@ export class GenerateCollageDto {
   @IsString()
   templateId?: string;
 
+  // 允许前端直接传入要渲染到图片里的文案
+  @IsOptional()
+  @IsString()
+  dateText?: string;
+
+  @IsOptional()
+  @IsString()
+  titleText?: string;
+
+  @IsOptional()
+  @IsString()
+  bodyText?: string;
+
   @IsOptional()
   @IsInt()
   @Min(256)
